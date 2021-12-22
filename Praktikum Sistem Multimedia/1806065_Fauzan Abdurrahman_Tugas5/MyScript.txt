@@ -1,0 +1,89 @@
+import flash.events.MouseEvent; 
+import flash.media.SoundTransform; 
+
+var lagu:Sound = new Sound(); 
+
+t_play.addEventListener(MouseEvent.CLICK, atur_tombol_suara); 
+t_pause.addEventListener(MouseEvent.CLICK, atur_tombol_suara); 
+t_stop.addEventListener(MouseEvent.CLICK, atur_tombol_suara); 
+t_vol_min.addEventListener(MouseEvent.CLICK, atur_tombol_suara); 
+t_vol_plus.addEventListener(MouseEvent.CLICK, atur_tombol_suara); 
+
+var suara_aktif:Boolean = true; var posisi:Number = 0; 
+
+	lagu.load(new URLRequest("Doraemon.mp3")); 
+	var musik:SoundChannel = new SoundChannel();  
+	var pengatur_suara:SoundTransform = new SoundTransform();
+	musik = lagu.play(0,1); 
+	
+function atur_tombol_suara(e:MouseEvent):void 
+{ 
+
+	var nama_tombol:String = e.currentTarget.name; 
+	gotoAndPlay(5);
+	
+	
+	if (nama_tombol == "t_play") {
+	
+	if (! suara_aktif) {
+		
+		musik = lagu.play(posisi,1); 
+		suara_aktif = true;
+		musik.soundTransform = pengatur_suara;
+		
+	}
+
+}
+
+if (nama_tombol == "t_pause")
+
+{
+
+gotoAndStop(5);
+posisi = musik.position; 
+musik.stop(); 
+suara_aktif = false;
+
+}
+
+if (nama_tombol == "t_stop")
+
+{
+	
+gotoAndStop(5);
+posisi = 0; musik.stop(); 
+suara_aktif = false;
+
+}
+
+if (nama_tombol == "t_vol_min")
+
+{
+
+pengatur_suara.volume = pengatur_suara.volume - 0.2; if (pengatur_suara.volume <= 0)
+
+{
+
+pengatur_suara.volume = 0;
+
+}
+musik.soundTransform = pengatur_suara;
+}
+
+if (nama_tombol == "t_vol_plus")
+
+{
+
+pengatur_suara.volume = pengatur_suara.volume + 0.2; if (pengatur_suara.volume >= 1)
+
+{
+
+pengatur_suara.volume = 1;
+
+}
+
+musik.soundTransform = pengatur_suara;
+
+}
+
+}

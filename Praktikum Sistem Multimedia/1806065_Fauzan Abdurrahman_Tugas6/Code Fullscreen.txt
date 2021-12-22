@@ -1,0 +1,13 @@
+function fullscreen(event:MouseEvent):void 
+{
+ fscommand("fullscreen", "true");
+}
+
+function normal(event:MouseEvent):void 
+{
+ fscommand("fullscreen", "false");
+}
+
+
+btn_fullscreen.addEventListener(MouseEvent.CLICK,fullscreen);
+btn_normal.addEventListener(MouseEvent.CLICK,normal);

@@ -1,0 +1,1328 @@
+uper */) {
+                        ts.addEmitHelper(block, ts.asyncSuperHelper);
+                    }
+                }
+                result = block;
+            }
+            else {
+                var expression = emitHelpers().createAwaiterHelper(inHasLexicalThisContext(), hasLexicalArguments, promiseConstructor, transformAsyncFunctionBodyWorker(node.body));
+                var declarations = endLexicalEnvironment();
+                if (ts.some(declarations)) {
+                    var block = factory.converters.convertToFunctionBlock(expression);
+                    result = factory.updateBlock(block, ts.setTextRange(factory.createNodeArray(ts.concatenate(declarations, block.statements)), block.statements));
+                }
+                else {
+                    result = expression;
+                }
+            }
+            enclosingFunctionParameterNames = savedEnclosingFunctionParameterNames;
+            if (!isArrowFunction) {
+                capturedSuperProperties = savedCapturedSuperProperties;
+                hasSuperElementAccess = savedHasSuperElementAccess;
+            }
+            return result;
+        }
+        function transformAsyncFunctionBodyWorker(body, start) {
+            if (ts.isBlock(body)) {
+                return factory.updateBlock(body, ts.visitNodes(body.statements, asyncBodyVisitor, ts.isStatement, start));
+            }
+            else {
+                return factory.converters.convertToFunctionBlock(ts.visitNode(body, asyncBodyVisitor, ts.isConciseBody));
+            }
+        }
+        function getPromiseConstructor(type) {
+            var typeName = type && ts.getEntityNameFromTypeNode(type);
+            if (typeName && ts.isEntityName(typeName)) {
+                var serializationKind = resolver.getTypeReferenceSerializationKind(typeName);
+                if (serializationKind === ts.TypeReferenceSerializationKind.TypeWithConstructSignatureAndValue
+                    || serializationKind === ts.TypeReferenceSerializationKind.Unknown) {
+                    return typeName;
+                }
+            }
+            return undefined;
+        }
+        function enableSubstitutionForAsyncMethodsWithSuper() {
+            if ((enabledSubstitutions & 1 /* AsyncMethodsWithSuper */) === 0) {
+                enabledSubstitutions |= 1 /* AsyncMethodsWithSuper */;
+                // We need to enable substitutions for call, property access, and element access
+                // if we need to rewrite super calls.
+                context.enableSubstitution(200 /* CallExpression */);
+                context.enableSubstitution(198 /* PropertyAccessExpression */);
+                context.enableSubstitution(199 /* ElementAccessExpression */);
+                // We need to be notified when entering and exiting declarations that bind super.
+                context.enableEmitNotification(249 /* ClassDeclaration */);
+                context.enableEmitNotification(164 /* MethodDeclaration */);
+                context.enableEmitNotification(166 /* GetAccessor */);
+                context.enableEmitNotification(167 /* SetAccessor */);
+                context.enableEmitNotification(165 /* Constructor */);
+                // We need to be notified when entering the generated accessor arrow functions.
+                context.enableEmitNotification(229 /* VariableStatement */);
+            }
+        }
+        /**
+         * Hook for node emit.
+         *
+         * @param hint A hint as to the intended usage of the node.
+         * @param node The node to emit.
+         * @param emit A callback used to emit the node in the printer.
+         */
+        function onEmitNode(hint, node, emitCallback) {
+            // If we need to support substitutions for `super` in an async method,
+            // we should track it here.
+            if (enabledSubstitutions & 1 /* AsyncMethodsWithSuper */ && isSuperContainer(node)) {
+                var superContainerFlags = resolver.getNodeCheckFlags(node) & (2048 /* AsyncMethodWithSuper */ | 4096 /* AsyncMethodWithSuperBinding */);
+                if (superContainerFlags !== enclosingSuperContainerFlags) {
+                    var savedEnclosingSuperContainerFlags = enclosingSuperContainerFlags;
+                    enclosingSuperContainerFlags = superContainerFlags;
+                    previousOnEmitNode(hint, node, emitCallback);
+                    enclosingSuperContainerFlags = savedEnclosingSuperContainerFlags;
+                    return;
+                }
+            }
+            // Disable substitution in the generated super accessor itself.
+            else if (enabledSubstitutions && substitutedSuperAccessors[ts.getNodeId(node)]) {
+                var savedEnclosingSuperContainerFlags = enclosingSuperContainerFlags;
+                enclosingSuperContainerFlags = 0;
+                previousOnEmitNode(hint, node, emitCallback);
+                enclosingSuperContainerFlags = savedEnclosingSuperContainerFlags;
+                return;
+            }
+            previousOnEmitNode(hint, node, emitCallback);
+        }
+        /**
+         * Hooks node substitutions.
+         *
+         * @param hint A hint as to the intended usage of the node.
+         * @param node The node to substitute.
+         */
+        function onSubstituteNode(hint, node) {
+            node = previousOnSubstituteNode(hint, node);
+            if (hint === 1 /* Expression */ && enclosingSuperContainerFlags) {
+                return substituteExpression(node);
+            }
+            return node;
+        }
+        function substituteExpression(node) {
+            switch (node.kind) {
+                case 198 /* PropertyAccessExpression */:
+                    return substitutePropertyAccessExpression(node);
+                case 199 /* ElementAccessExpression */:
+                    return substituteElementAccessExpression(node);
+                case 200 /* CallExpression */:
+                    return substituteCallExpression(node);
+            }
+            return node;
+        }
+        function substitutePropertyAccessExpression(node) {
+            if (node.expression.kind === 105 /* SuperKeyword */) {
+                return ts.setTextRange(factory.createPropertyAccessExpression(factory.createUniqueName("_super", 16 /* Optimistic */ | 32 /* FileLevel */), node.name), node);
+            }
+            return node;
+        }
+        function substituteElementAccessExpression(node) {
+            if (node.expression.kind === 105 /* SuperKeyword */) {
+                return createSuperElementAccessInAsyncMethod(node.argumentExpression, node);
+            }
+            return node;
+        }
+        function substituteCallExpression(node) {
+            var expression = node.expression;
+            if (ts.isSuperProperty(expression)) {
+                var argumentExpression = ts.isPropertyAccessExpression(expression)
+                    ? substitutePropertyAccessExpression(expression)
+                    : substituteElementAccessExpression(expression);
+                return factory.createCallExpression(factory.createPropertyAccessExpression(argumentExpression, "call"), 
+                /*typeArguments*/ undefined, __spreadArrays([
+                    factory.createThis()
+                ], node.arguments));
+            }
+            return node;
+        }
+        function isSuperContainer(node) {
+            var kind = node.kind;
+            return kind === 249 /* ClassDeclaration */
+                || kind === 165 /* Constructor */
+                || kind === 164 /* MethodDeclaration */
+                || kind === 166 /* GetAccessor */
+                || kind === 167 /* SetAccessor */;
+        }
+        function createSuperElementAccessInAsyncMethod(argumentExpression, location) {
+            if (enclosingSuperContainerFlags & 4096 /* AsyncMethodWithSuperBinding */) {
+                return ts.setTextRange(factory.createPropertyAccessExpression(factory.createCallExpression(factory.createUniqueName("_superIndex", 16 /* Optimistic */ | 32 /* FileLevel */), 
+                /*typeArguments*/ undefined, [argumentExpression]), "value"), location);
+            }
+            else {
+                return ts.setTextRange(factory.createCallExpression(factory.createUniqueName("_superIndex", 16 /* Optimistic */ | 32 /* FileLevel */), 
+                /*typeArguments*/ undefined, [argumentExpression]), location);
+            }
+        }
+    }
+    ts.transformES2017 = transformES2017;
+    /** Creates a variable named `_super` with accessor properties for the given property names. */
+    function createSuperAccessVariableStatement(factory, resolver, node, names) {
+        // Create a variable declaration with a getter/setter (if binding) definition for each name:
+        //   const _super = Object.create(null, { x: { get: () => super.x, set: (v) => super.x = v }, ... });
+        var hasBinding = (resolver.getNodeCheckFlags(node) & 4096 /* AsyncMethodWithSuperBinding */) !== 0;
+        var accessors = [];
+        names.forEach(function (_, key) {
+            var name = ts.unescapeLeadingUnderscores(key);
+            var getterAndSetter = [];
+            getterAndSetter.push(factory.createPropertyAssignment("get", factory.createArrowFunction(
+            /* modifiers */ undefined, 
+            /* typeParameters */ undefined, 
+            /* parameters */ [], 
+            /* type */ undefined, 
+            /* equalsGreaterThanToken */ undefined, ts.setEmitFlags(factory.createPropertyAccessExpression(ts.setEmitFlags(factory.createSuper(), 4 /* NoSubstitution */), name), 4 /* NoSubstitution */))));
+            if (hasBinding) {
+                getterAndSetter.push(factory.createPropertyAssignment("set", factory.createArrowFunction(
+                /* modifiers */ undefined, 
+                /* typeParameters */ undefined, 
+                /* parameters */ [
+                    factory.createParameterDeclaration(
+                    /* decorators */ undefined, 
+                    /* modifiers */ undefined, 
+                    /* dotDotDotToken */ undefined, "v", 
+                    /* questionToken */ undefined, 
+                    /* type */ undefined, 
+                    /* initializer */ undefined)
+                ], 
+                /* type */ undefined, 
+                /* equalsGreaterThanToken */ undefined, factory.createAssignment(ts.setEmitFlags(factory.createPropertyAccessExpression(ts.setEmitFlags(factory.createSuper(), 4 /* NoSubstitution */), name), 4 /* NoSubstitution */), factory.createIdentifier("v")))));
+            }
+            accessors.push(factory.createPropertyAssignment(name, factory.createObjectLiteralExpression(getterAndSetter)));
+        });
+        return factory.createVariableStatement(
+        /* modifiers */ undefined, factory.createVariableDeclarationList([
+            factory.createVariableDeclaration(factory.createUniqueName("_super", 16 /* Optimistic */ | 32 /* FileLevel */), 
+            /*exclamationToken*/ undefined, 
+            /* type */ undefined, factory.createCallExpression(factory.createPropertyAccessExpression(factory.createIdentifier("Object"), "create"), 
+            /* typeArguments */ undefined, [
+                factory.createNull(),
+                factory.createObjectLiteralExpression(accessors, /* multiline */ true)
+            ]))
+        ], 2 /* Const */));
+    }
+    ts.createSuperAccessVariableStatement = createSuperAccessVariableStatement;
+})(ts || (ts = {}));
+/*@internal*/
+var ts;
+(function (ts) {
+    var ESNextSubstitutionFlags;
+    (function (ESNextSubstitutionFlags) {
+        /** Enables substitutions for async methods with `super` calls. */
+        ESNextSubstitutionFlags[ESNextSubstitutionFlags["AsyncMethodsWithSuper"] = 1] = "AsyncMethodsWithSuper";
+    })(ESNextSubstitutionFlags || (ESNextSubstitutionFlags = {}));
+    // Facts we track as we traverse the tree
+    var HierarchyFacts;
+    (function (HierarchyFacts) {
+        HierarchyFacts[HierarchyFacts["None"] = 0] = "None";
+        //
+        // Ancestor facts
+        //
+        HierarchyFacts[HierarchyFacts["HasLexicalThis"] = 1] = "HasLexicalThis";
+        HierarchyFacts[HierarchyFacts["IterationContainer"] = 2] = "IterationContainer";
+        // NOTE: do not add more ancestor flags without also updating AncestorFactsMask below.
+        //
+        // Ancestor masks
+        //
+        HierarchyFacts[HierarchyFacts["AncestorFactsMask"] = 3] = "AncestorFactsMask";
+        HierarchyFacts[HierarchyFacts["SourceFileIncludes"] = 1] = "SourceFileIncludes";
+        HierarchyFacts[HierarchyFacts["SourceFileExcludes"] = 2] = "SourceFileExcludes";
+        HierarchyFacts[HierarchyFacts["StrictModeSourceFileIncludes"] = 0] = "StrictModeSourceFileIncludes";
+        HierarchyFacts[HierarchyFacts["ClassOrFunctionIncludes"] = 1] = "ClassOrFunctionIncludes";
+        HierarchyFacts[HierarchyFacts["ClassOrFunctionExcludes"] = 2] = "ClassOrFunctionExcludes";
+        HierarchyFacts[HierarchyFacts["ArrowFunctionIncludes"] = 0] = "ArrowFunctionIncludes";
+        HierarchyFacts[HierarchyFacts["ArrowFunctionExcludes"] = 2] = "ArrowFunctionExcludes";
+        HierarchyFacts[HierarchyFacts["IterationStatementIncludes"] = 2] = "IterationStatementIncludes";
+        HierarchyFacts[HierarchyFacts["IterationStatementExcludes"] = 0] = "IterationStatementExcludes";
+    })(HierarchyFacts || (HierarchyFacts = {}));
+    function transformES2018(context) {
+        var factory = context.factory, emitHelpers = context.getEmitHelperFactory, resumeLexicalEnvironment = context.resumeLexicalEnvironment, endLexicalEnvironment = context.endLexicalEnvironment, hoistVariableDeclaration = context.hoistVariableDeclaration;
+        var resolver = context.getEmitResolver();
+        var compilerOptions = context.getCompilerOptions();
+        var languageVersion = ts.getEmitScriptTarget(compilerOptions);
+        var previousOnEmitNode = context.onEmitNode;
+        context.onEmitNode = onEmitNode;
+        var previousOnSubstituteNode = context.onSubstituteNode;
+        context.onSubstituteNode = onSubstituteNode;
+        var exportedVariableStatement = false;
+        var enabledSubstitutions;
+        var enclosingFunctionFlags;
+        var enclosingSuperContainerFlags = 0;
+        var hierarchyFacts = 0;
+        var currentSourceFile;
+        var taggedTemplateStringDeclarations;
+        /** Keeps track of property names accessed on super (`super.x`) within async functions. */
+        var capturedSuperProperties;
+        /** Whether the async function contains an element access on super (`super[x]`). */
+        var hasSuperElementAccess;
+        /** A set of node IDs for generated super accessors. */
+        var substitutedSuperAccessors = [];
+        return ts.chainBundle(context, transformSourceFile);
+        function affectsSubtree(excludeFacts, includeFacts) {
+            return hierarchyFacts !== (hierarchyFacts & ~excludeFacts | includeFacts);
+        }
+        /**
+         * Sets the `HierarchyFacts` for this node prior to visiting this node's subtree, returning the facts set prior to modification.
+         * @param excludeFacts The existing `HierarchyFacts` to reset before visiting the subtree.
+         * @param includeFacts The new `HierarchyFacts` to set before visiting the subtree.
+         */
+        function enterSubtree(excludeFacts, includeFacts) {
+            var ancestorFacts = hierarchyFacts;
+            hierarchyFacts = (hierarchyFacts & ~excludeFacts | includeFacts) & 3 /* AncestorFactsMask */;
+            return ancestorFacts;
+        }
+        /**
+         * Restores the `HierarchyFacts` for this node's ancestor after visiting this node's
+         * subtree.
+         * @param ancestorFacts The `HierarchyFacts` of the ancestor to restore after visiting the subtree.
+         */
+        function exitSubtree(ancestorFacts) {
+            hierarchyFacts = ancestorFacts;
+        }
+        function recordTaggedTemplateString(temp) {
+            taggedTemplateStringDeclarations = ts.append(taggedTemplateStringDeclarations, factory.createVariableDeclaration(temp));
+        }
+        function transformSourceFile(node) {
+            if (node.isDeclarationFile) {
+                return node;
+            }
+            currentSourceFile = node;
+            var visited = visitSourceFile(node);
+            ts.addEmitHelpers(visited, context.readEmitHelpers());
+            currentSourceFile = undefined;
+            taggedTemplateStringDeclarations = undefined;
+            return visited;
+        }
+        function visitor(node) {
+            return visitorWorker(node, /*noDestructuringValue*/ false);
+        }
+        function visitorNoDestructuringValue(node) {
+            return visitorWorker(node, /*noDestructuringValue*/ true);
+        }
+        function visitorNoAsyncModifier(node) {
+            if (node.kind === 129 /* AsyncKeyword */) {
+                return undefined;
+            }
+            return node;
+        }
+        function doWithHierarchyFacts(cb, value, excludeFacts, includeFacts) {
+            if (affectsSubtree(excludeFacts, includeFacts)) {
+                var ancestorFacts = enterSubtree(excludeFacts, includeFacts);
+                var result = cb(value);
+                exitSubtree(ancestorFacts);
+                return result;
+            }
+            return cb(value);
+        }
+        function visitDefault(node) {
+            return ts.visitEachChild(node, visitor, context);
+        }
+        function visitorWorker(node, noDestructuringValue) {
+            if ((node.transformFlags & 32 /* ContainsES2018 */) === 0) {
+                return node;
+            }
+            switch (node.kind) {
+                case 210 /* AwaitExpression */:
+                    return visitAwaitExpression(node);
+                case 216 /* YieldExpression */:
+                    return visitYieldExpression(node);
+                case 239 /* ReturnStatement */:
+                    return visitReturnStatement(node);
+                case 242 /* LabeledStatement */:
+                    return visitLabeledStatement(node);
+                case 197 /* ObjectLiteralExpression */:
+                    return visitObjectLiteralExpression(node);
+                case 213 /* BinaryExpression */:
+                    return visitBinaryExpression(node, noDestructuringValue);
+                case 284 /* CatchClause */:
+                    return visitCatchClause(node);
+                case 229 /* VariableStatement */:
+                    return visitVariableStatement(node);
+                case 246 /* VariableDeclaration */:
+                    return visitVariableDeclaration(node);
+                case 232 /* DoStatement */:
+                case 233 /* WhileStatement */:
+                case 235 /* ForInStatement */:
+                    return doWithHierarchyFacts(visitDefault, node, 0 /* IterationStatementExcludes */, 2 /* IterationStatementIncludes */);
+                case 236 /* ForOfStatement */:
+                    return visitForOfStatement(node, /*outermostLabeledStatement*/ undefined);
+                case 234 /* ForStatement */:
+                    return doWithHierarchyFacts(visitForStatement, node, 0 /* IterationStatementExcludes */, 2 /* IterationStatementIncludes */);
+                case 209 /* VoidExpression */:
+                    return visitVoidExpression(node);
+                case 165 /* Constructor */:
+                    return doWithHierarchyFacts(visitConstructorDeclaration, node, 2 /* ClassOrFunctionExcludes */, 1 /* ClassOrFunctionIncludes */);
+                case 164 /* MethodDeclaration */:
+                    return doWithHierarchyFacts(visitMethodDeclaration, node, 2 /* ClassOrFunctionExcludes */, 1 /* ClassOrFunctionIncludes */);
+                case 166 /* GetAccessor */:
+                    return doWithHierarchyFacts(visitGetAccessorDeclaration, node, 2 /* ClassOrFunctionExcludes */, 1 /* ClassOrFunctionIncludes */);
+                case 167 /* SetAccessor */:
+                    return doWithHierarchyFacts(visitSetAccessorDeclaration, node, 2 /* ClassOrFunctionExcludes */, 1 /* ClassOrFunctionIncludes */);
+                case 248 /* FunctionDeclaration */:
+                    return doWithHierarchyFacts(visitFunctionDeclaration, node, 2 /* ClassOrFunctionExcludes */, 1 /* ClassOrFunctionIncludes */);
+                case 205 /* FunctionExpression */:
+                    return doWithHierarchyFacts(visitFunctionExpression, node, 2 /* ClassOrFunctionExcludes */, 1 /* ClassOrFunctionIncludes */);
+                case 206 /* ArrowFunction */:
+                    return doWithHierarchyFacts(visitArrowFunction, node, 2 /* ArrowFunctionExcludes */, 0 /* ArrowFunctionIncludes */);
+                case 159 /* Parameter */:
+                    return visitParameter(node);
+                case 230 /* ExpressionStatement */:
+                    return visitExpressionStatement(node);
+                case 204 /* ParenthesizedExpression */:
+                    return visitParenthesizedExpression(node, noDestructuringValue);
+                case 202 /* TaggedTemplateExpression */:
+                    return visitTaggedTemplateExpression(node);
+                case 198 /* PropertyAccessExpression */:
+                    if (capturedSuperProperties && ts.isPropertyAccessExpression(node) && node.expression.kind === 105 /* SuperKeyword */) {
+                        capturedSuperProperties.add(node.name.escapedText);
+                    }
+                    return ts.visitEachChild(node, visitor, context);
+                case 199 /* ElementAccessExpression */:
+                    if (capturedSuperProperties && node.expression.kind === 105 /* SuperKeyword */) {
+                        hasSuperElementAccess = true;
+                    }
+                    return ts.visitEachChild(node, visitor, context);
+                case 249 /* ClassDeclaration */:
+                case 218 /* ClassExpression */:
+                    return doWithHierarchyFacts(visitDefault, node, 2 /* ClassOrFunctionExcludes */, 1 /* ClassOrFunctionIncludes */);
+                default:
+                    return ts.visitEachChild(node, visitor, context);
+            }
+        }
+        function visitAwaitExpression(node) {
+            if (enclosingFunctionFlags & 2 /* Async */ && enclosingFunctionFlags & 1 /* Generator */) {
+                return ts.setOriginalNode(ts.setTextRange(factory.createYieldExpression(/*asteriskToken*/ undefined, emitHelpers().createAwaitHelper(ts.visitNode(node.expression, visitor, ts.isExpression))), 
+                /*location*/ node), node);
+            }
+            return ts.visitEachChild(node, visitor, context);
+        }
+        function visitYieldExpression(node) {
+            if (enclosingFunctionFlags & 2 /* Async */ && enclosingFunctionFlags & 1 /* Generator */) {
+                if (node.asteriskToken) {
+                    var expression = ts.visitNode(ts.Debug.assertDefined(node.expression), visitor, ts.isExpression);
+                    return ts.setOriginalNode(ts.setTextRange(factory.createYieldExpression(
+                    /*asteriskToken*/ undefined, emitHelpers().createAwaitHelper(factory.updateYieldExpression(node, node.asteriskToken, ts.setTextRange(emitHelpers().createAsyncDelegatorHelper(ts.setTextRange(emitHelpers().createAsyncValuesHelper(expression), expression)), expression)))), node), node);
+                }
+                return ts.setOriginalNode(ts.setTextRange(factory.createYieldExpression(
+                /*asteriskToken*/ undefined, createDownlevelAwait(node.expression
+                    ? ts.visitNode(node.expression, visitor, ts.isExpression)
+                    : factory.createVoidZero())), node), node);
+            }
+            return ts.visitEachChild(node, visitor, context);
+        }
+        function visitReturnStatement(node) {
+            if (enclosingFunctionFlags & 2 /* Async */ && enclosingFunctionFlags & 1 /* Generator */) {
+                return factory.updateReturnStatement(node, createDownlevelAwait(node.expression ? ts.visitNode(node.expression, visitor, ts.isExpression) : factory.createVoidZero()));
+            }
+            return ts.visitEachChild(node, visitor, context);
+        }
+        function visitLabeledStatement(node) {
+            if (enclosingFunctionFlags & 2 /* Async */) {
+                var statement = ts.unwrapInnermostStatementOfLabel(node);
+                if (statement.kind === 236 /* ForOfStatement */ && statement.awaitModifier) {
+                    return visitForOfStatement(statement, node);
+                }
+                return factory.restoreEnclosingLabel(ts.visitNode(statement, visitor, ts.isStatement, factory.liftToBlock), node);
+            }
+            return ts.visitEachChild(node, visitor, context);
+        }
+        function chunkObjectLiteralElements(elements) {
+            var chunkObject;
+            var objects = [];
+            for (var _i = 0, elements_4 = elements; _i < elements_4.length; _i++) {
+                var e = elements_4[_i];
+                if (e.kind === 287 /* SpreadAssignment */) {
+                    if (chunkObject) {
+                        objects.push(factory.createObjectLiteralExpression(chunkObject));
+                        chunkObject = undefined;
+                    }
+                    var target = e.expression;
+                    objects.push(ts.visitNode(target, visitor, ts.isExpression));
+                }
+                else {
+                    chunkObject = ts.append(chunkObject, e.kind === 285 /* PropertyAssignment */
+                        ? factory.createPropertyAssignment(e.name, ts.visitNode(e.initializer, visitor, ts.isExpression))
+                        : ts.visitNode(e, visitor, ts.isObjectLiteralElementLike));
+                }
+            }
+            if (chunkObject) {
+                objects.push(factory.createObjectLiteralExpression(chunkObject));
+            }
+            return objects;
+        }
+        function visitObjectLiteralExpression(node) {
+            if (node.transformFlags & 16384 /* ContainsObjectRestOrSpread */) {
+                // spread elements emit like so:
+                // non-spread elements are chunked together into object literals, and then all are passed to __assign:
+                //     { a, ...o, b } => __assign(__assign({a}, o), {b});
+                // If the first element is a spread element, then the first argument to __assign is {}:
+                //     { ...o, a, b, ...o2 } => __assign(__assign(__assign({}, o), {a, b}), o2)
+                //
+                // We cannot call __assign with more than two elements, since any element could cause side effects. For
+                // example:
+                //      var k = { a: 1, b: 2 };
+                //      var o = { a: 3, ...k, b: k.a++ };
+                //      // expected: { a: 1, b: 1 }
+                // If we translate the above to `__assign({ a: 3 }, k, { b: k.a++ })`, the `k.a++` will evaluate before
+                // `k` is spread and we end up with `{ a: 2, b: 1 }`.
+                //
+                // This also occurs for spread elements, not just property assignments:
+                //      var k = { a: 1, get b() { l = { z: 9 }; return 2; } };
+                //      var l = { c: 3 };
+                //      var o = { ...k, ...l };
+                //      // expected: { a: 1, b: 2, z: 9 }
+                // If we translate the above to `__assign({}, k, l)`, the `l` will evaluate before `k` is spread and we
+                // end up with `{ a: 1, b: 2, c: 3 }`
+                var objects = chunkObjectLiteralElements(node.properties);
+                if (objects.length && objects[0].kind !== 197 /* ObjectLiteralExpression */) {
+                    objects.unshift(factory.createObjectLiteralExpression());
+                }
+                var expression = objects[0];
+                if (objects.length > 1) {
+                    for (var i = 1; i < objects.length; i++) {
+                        expression = emitHelpers().createAssignHelper([expression, objects[i]]);
+                    }
+                    return expression;
+                }
+                else {
+                    return emitHelpers().createAssignHelper(objects);
+                }
+            }
+            return ts.visitEachChild(node, visitor, context);
+        }
+        function visitExpressionStatement(node) {
+            return ts.visitEachChild(node, visitorNoDestructuringValue, context);
+        }
+        function visitParenthesizedExpression(node, noDestructuringValue) {
+            return ts.visitEachChild(node, noDestructuringValue ? visitorNoDestructuringValue : visitor, context);
+        }
+        function visitSourceFile(node) {
+            var ancestorFacts = enterSubtree(2 /* SourceFileExcludes */, ts.isEffectiveStrictModeSourceFile(node, compilerOptions) ?
+                0 /* StrictModeSourceFileIncludes */ :
+                1 /* SourceFileIncludes */);
+            exportedVariableStatement = false;
+            var visited = ts.visitEachChild(node, visitor, context);
+            var statement = ts.concatenate(visited.statements, taggedTemplateStringDeclarations && [
+                factory.createVariableStatement(/*modifiers*/ undefined, factory.createVariableDeclarationList(taggedTemplateStringDeclarations))
+            ]);
+            var result = factory.updateSourceFile(visited, ts.setTextRange(factory.createNodeArray(statement), node.statements));
+            exitSubtree(ancestorFacts);
+            return result;
+        }
+        function visitTaggedTemplateExpression(node) {
+            return ts.processTaggedTemplateExpression(context, node, visitor, currentSourceFile, recordTaggedTemplateString, ts.ProcessLevel.LiftRestriction);
+        }
+        /**
+         * Visits a BinaryExpression that contains a destructuring assignment.
+         *
+         * @param node A BinaryExpression node.
+         */
+        function visitBinaryExpression(node, noDestructuringValue) {
+            if (ts.isDestructuringAssignment(node) && node.left.transformFlags & 16384 /* ContainsObjectRestOrSpread */) {
+                return ts.flattenDestructuringAssignment(node, visitor, context, 1 /* ObjectRest */, !noDestructuringValue);
+            }
+            else if (node.operatorToken.kind === 27 /* CommaToken */) {
+                return factory.updateBinaryExpression(node, ts.visitNode(node.left, visitorNoDestructuringValue, ts.isExpression), node.operatorToken, ts.visitNode(node.right, noDestructuringValue ? visitorNoDestructuringValue : visitor, ts.isExpression));
+            }
+            return ts.visitEachChild(node, visitor, context);
+        }
+        function visitCatchClause(node) {
+            if (node.variableDeclaration &&
+                ts.isBindingPattern(node.variableDeclaration.name) &&
+                node.variableDeclaration.name.transformFlags & 16384 /* ContainsObjectRestOrSpread */) {
+                var name = factory.getGeneratedNameForNode(node.variableDeclaration.name);
+                var updatedDecl = factory.updateVariableDeclaration(node.variableDeclaration, node.variableDeclaration.name, /*exclamationToken*/ undefined, /*type*/ undefined, name);
+                var visitedBindings = ts.flattenDestructuringBinding(updatedDecl, visitor, context, 1 /* ObjectRest */);
+                var block = ts.visitNode(node.block, visitor, ts.isBlock);
+                if (ts.some(visitedBindings)) {
+                    block = factory.updateBlock(block, __spreadArrays([
+                        factory.createVariableStatement(/*modifiers*/ undefined, visitedBindings)
+                    ], block.statements));
+                }
+                return factory.updateCatchClause(node, factory.updateVariableDeclaration(node.variableDeclaration, name, /*exclamationToken*/ undefined, /*type*/ undefined, /*initializer*/ undefined), block);
+            }
+            return ts.visitEachChild(node, visitor, context);
+        }
+        function visitVariableStatement(node) {
+            if (ts.hasSyntacticModifier(node, 1 /* Export */)) {
+                var savedExportedVariableStatement = exportedVariableStatement;
+                exportedVariableStatement = true;
+                var visited = ts.visitEachChild(node, visitor, context);
+                exportedVariableStatement = savedExportedVariableStatement;
+                return visited;
+            }
+            return ts.visitEachChild(node, visitor, context);
+        }
+        /**
+         * Visits a VariableDeclaration node with a binding pattern.
+         *
+         * @param node A VariableDeclaration node.
+         */
+        function visitVariableDeclaration(node) {
+            if (exportedVariableStatement) {
+                var savedExportedVariableStatement = exportedVariableStatement;
+                exportedVariableStatement = false;
+                var visited = visitVariableDeclarationWorker(node, /*exportedVariableStatement*/ true);
+                exportedVariableStatement = savedExportedVariableStatement;
+                return visited;
+            }
+            return visitVariableDeclarationWorker(node, /*exportedVariableStatement*/ false);
+        }
+        function visitVariableDeclarationWorker(node, exportedVariableStatement) {
+            // If we are here it is because the name contains a binding pattern with a rest somewhere in it.
+            if (ts.isBindingPattern(node.name) && node.name.transformFlags & 16384 /* ContainsObjectRestOrSpread */) {
+                return ts.flattenDestructuringBinding(node, visitor, context, 1 /* ObjectRest */, 
+                /*rval*/ undefined, exportedVariableStatement);
+            }
+            return ts.visitEachChild(node, visitor, context);
+        }
+        function visitForStatement(node) {
+            return factory.updateForStatement(node, ts.visitNode(node.initializer, visitorNoDestructuringValue, ts.isForInitializer), ts.visitNode(node.condition, visitor, ts.isExpression), ts.visitNode(node.incrementor, visitor, ts.isExpression), ts.visitNode(node.statement, visitor, ts.isStatement));
+        }
+        function visitVoidExpression(node) {
+            return ts.visitEachChild(node, visitorNoDestructuringValue, context);
+        }
+        /**
+         * Visits a ForOfStatement and converts it into a ES2015-compatible ForOfStatement.
+         *
+         * @param node A ForOfStatement.
+         */
+        function visitForOfStatement(node, outermostLabeledStatement) {
+            var ancestorFacts = enterSubtree(0 /* IterationStatementExcludes */, 2 /* IterationStatementIncludes */);
+            if (node.initializer.transformFlags & 16384 /* ContainsObjectRestOrSpread */) {
+                node = transformForOfStatementWithObjectRest(node);
+            }
+            var result = node.awaitModifier ?
+                transformForAwaitOfStatement(node, outermostLabeledStatement, ancestorFacts) :
+                factory.restoreEnclosingLabel(ts.visitEachChild(node, visitor, context), outermostLabeledStatement);
+            exitSubtree(ancestorFacts);
+            return result;
+        }
+        function transformForOfStatementWithObjectRest(node) {
+            var initializerWithoutParens = ts.skipParentheses(node.initializer);
+            if (ts.isVariableDeclarationList(initializerWithoutParens) || ts.isAssignmentPattern(initializerWithoutParens)) {
+                var bodyLocation = void 0;
+                var statementsLocation = void 0;
+                var temp = factory.createTempVariable(/*recordTempVariable*/ undefined);
+                var statements = [ts.createForOfBindingStatement(factory, initializerWithoutParens, temp)];
+                if (ts.isBlock(node.statement)) {
+                    ts.addRange(statements, node.statement.statements);
+                    bodyLocation = node.statement;
+                    statementsLocation = node.statement.statements;
+                }
+                else if (node.statement) {
+                    ts.append(statements, node.statement);
+                    bodyLocation = node.statement;
+                    statementsLocation = node.statement;
+                }
+                return factory.updateForOfStatement(node, node.awaitModifier, ts.setTextRange(factory.createVariableDeclarationList([
+                    ts.setTextRange(factory.createVariableDeclaration(temp), node.initializer)
+                ], 1 /* Let */), node.initializer), node.expression, ts.setTextRange(factory.createBlock(ts.setTextRange(factory.createNodeArray(statements), statementsLocation), 
+                /*multiLine*/ true), bodyLocation));
+            }
+            return node;
+        }
+        function convertForOfStatementHead(node, boundValue) {
+            var binding = ts.createForOfBindingStatement(factory, node.initializer, boundValue);
+            var bodyLocation;
+            var statementsLocation;
+            var statements = [ts.visitNode(binding, visitor, ts.isStatement)];
+            var statement = ts.visitNode(node.statement, visitor, ts.isStatement);
+            if (ts.isBlock(statement)) {
+                ts.addRange(statements, statement.statements);
+                bodyLocation = statement;
+                statementsLocation = statement.statements;
+            }
+            else {
+                statements.push(statement);
+            }
+            return ts.setEmitFlags(ts.setTextRange(factory.createBlock(ts.setTextRange(factory.createNodeArray(statements), statementsLocation), 
+            /*multiLine*/ true), bodyLocation), 48 /* NoSourceMap */ | 384 /* NoTokenSourceMaps */);
+        }
+        function createDownlevelAwait(expression) {
+            return enclosingFunctionFlags & 1 /* Generator */
+                ? factory.createYieldExpression(/*asteriskToken*/ undefined, emitHelpers().createAwaitHelper(expression))
+                : factory.createAwaitExpression(expression);
+        }
+        function transformForAwaitOfStatement(node, outermostLabeledStatement, ancestorFacts) {
+            var expression = ts.visitNode(node.expression, visitor, ts.isExpression);
+            var iterator = ts.isIdentifier(expression) ? factory.getGeneratedNameForNode(expression) : factory.createTempVariable(/*recordTempVariable*/ undefined);
+            var result = ts.isIdentifier(expression) ? factory.getGeneratedNameForNode(iterator) : factory.createTempVariable(/*recordTempVariable*/ undefined);
+            var errorRecord = factory.createUniqueName("e");
+            var catchVariable = factory.getGeneratedNameForNode(errorRecord);
+            var returnMethod = factory.createTempVariable(/*recordTempVariable*/ undefined);
+            var callValues = ts.setTextRange(emitHelpers().createAsyncValuesHelper(expression), node.expression);
+            var callNext = factory.createCallExpression(factory.createPropertyAccessExpression(iterator, "next"), /*typeArguments*/ undefined, []);
+            var getDone = factory.createPropertyAccessExpression(result, "done");
+            var getValue = factory.createPropertyAccessExpression(result, "value");
+            var callReturn = factory.createFunctionCallCall(returnMethod, iterator, []);
+            hoistVariableDeclaration(errorRecord);
+            hoistVariableDeclaration(returnMethod);
+            // if we are enclosed in an outer loop ensure we reset 'errorRecord' per each iteration
+            var initializer = ancestorFacts & 2 /* IterationContainer */ ?
+                factory.inlineExpressions([factory.createAssignment(errorRecord, factory.createVoidZero()), callValues]) :
+                callValues;
+            var forStatement = ts.setEmitFlags(ts.setTextRange(factory.createForStatement(
+            /*initializer*/ ts.setEmitFlags(ts.setTextRange(factory.createVariableDeclarationList([
+                ts.setTextRange(factory.createVariableDeclaration(iterator, /*exclamationToken*/ undefined, /*type*/ undefined, initializer), node.expression),
+                factory.createVariableDeclaration(result)
+            ]), node.expression), 2097152 /* NoHoisting */), 
+            /*condition*/ factory.createComma(factory.createAssignment(result, createDownlevelAwait(callNext)), factory.createLogicalNot(getDone)), 
+            /*incrementor*/ undefined, 
+            /*statement*/ convertForOfStatementHead(node, getValue)), 
+            /*location*/ node), 256 /* NoTokenTrailingSourceMaps */);
+            return factory.createTryStatement(factory.createBlock([
+                factory.restoreEnclosingLabel(forStatement, outermostLabeledStatement)
+            ]), factory.createCatchClause(factory.createVariableDeclaration(catchVariable), ts.setEmitFlags(factory.createBlock([
+                factory.createExpressionStatement(factory.createAssignment(errorRecord, factory.createObjectLiteralExpression([
+                    factory.createPropertyAssignment("error", catchVariable)
+                ])))
+            ]), 1 /* SingleLine */)), factory.createBlock([
+                factory.createTryStatement(
+                /*tryBlock*/ factory.createBlock([
+                    ts.setEmitFlags(factory.createIfStatement(factory.createLogicalAnd(factory.createLogicalAnd(result, factory.createLogicalNot(getDone)), factory.createAssignment(returnMethod, factory.createPropertyAccessExpression(iterator, "return"))), factory.createExpressionStatement(createDownlevelAwait(callReturn))), 1 /* SingleLine */)
+                ]), 
+                /*catchClause*/ undefined, 
+                /*finallyBlock*/ ts.setEmitFlags(factory.createBlock([
+                    ts.setEmitFlags(factory.createIfStatement(errorRecord, factory.createThrowStatement(factory.createPropertyAccessExpression(errorRecord, "error"))), 1 /* SingleLine */)
+                ]), 1 /* SingleLine */))
+            ]));
+        }
+        function visitParameter(node) {
+            if (node.transformFlags & 16384 /* ContainsObjectRestOrSpread */) {
+                // Binding patterns are converted into a generated name and are
+                // evaluated inside the function body.
+                return factory.updateParameterDeclaration(node, 
+                /*decorators*/ undefined, 
+                /*modifiers*/ undefined, node.dotDotDotToken, factory.getGeneratedNameForNode(node), 
+                /*questionToken*/ undefined, 
+                /*type*/ undefined, ts.visitNode(node.initializer, visitor, ts.isExpression));
+            }
+            return ts.visitEachChild(node, visitor, context);
+        }
+        function visitConstructorDeclaration(node) {
+            var savedEnclosingFunctionFlags = enclosingFunctionFlags;
+            enclosingFunctionFlags = 0 /* Normal */;
+            var updated = factory.updateConstructorDeclaration(node, 
+            /*decorators*/ undefined, node.modifiers, ts.visitParameterList(node.parameters, visitor, context), transformFunctionBody(node));
+            enclosingFunctionFlags = savedEnclosingFunctionFlags;
+            return updated;
+        }
+        function visitGetAccessorDeclaration(node) {
+            var savedEnclosingFunctionFlags = enclosingFunctionFlags;
+            enclosingFunctionFlags = 0 /* Normal */;
+            var updated = factory.updateGetAccessorDeclaration(node, 
+            /*decorators*/ undefined, node.modifiers, ts.visitNode(node.name, visitor, ts.isPropertyName), ts.visitParameterList(node.parameters, visitor, context), 
+            /*type*/ undefined, transformFunctionBody(node));
+            enclosingFunctionFlags = savedEnclosingFunctionFlags;
+            return updated;
+        }
+        function visitSetAccessorDeclaration(node) {
+            var savedEnclosingFunctionFlags = enclosingFunctionFlags;
+            enclosingFunctionFlags = 0 /* Normal */;
+            var updated = factory.updateSetAccessorDeclaration(node, 
+            /*decorators*/ undefined, node.modifiers, ts.visitNode(node.name, visitor, ts.isPropertyName), ts.visitParameterList(node.parameters, visitor, context), transformFunctionBody(node));
+            enclosingFunctionFlags = savedEnclosingFunctionFlags;
+            return updated;
+        }
+        function visitMethodDeclaration(node) {
+            var savedEnclosingFunctionFlags = enclosingFunctionFlags;
+            enclosingFunctionFlags = ts.getFunctionFlags(node);
+            var updated = factory.updateMethodDeclaration(node, 
+            /*decorators*/ undefined, enclosingFunctionFlags & 1 /* Generator */
+                ? ts.visitNodes(node.modifiers, visitorNoAsyncModifier, ts.isModifier)
+                : node.modifiers, enclosingFunctionFlags & 2 /* Async */
+                ? undefined
+                : node.asteriskToken, ts.visitNode(node.name, visitor, ts.isPropertyName), ts.visitNode(/*questionToken*/ undefined, visitor, ts.isToken), 
+            /*typeParameters*/ undefined, ts.visitParameterList(node.parameters, visitor, context), 
+            /*type*/ undefined, enclosingFunctionFlags & 2 /* Async */ && enclosingFunctionFlags & 1 /* Generator */
+                ? transformAsyncGeneratorFunctionBody(node)
+                : transformFunctionBody(node));
+            enclosingFunctionFlags = savedEnclosingFunctionFlags;
+            return updated;
+        }
+        function visitFunctionDeclaration(node) {
+            var savedEnclosingFunctionFlags = enclosingFunctionFlags;
+            enclosingFunctionFlags = ts.getFunctionFlags(node);
+            var updated = factory.updateFunctionDeclaration(node, 
+            /*decorators*/ undefined, enclosingFunctionFlags & 1 /* Generator */
+                ? ts.visitNodes(node.modifiers, visitorNoAsyncModifier, ts.isModifier)
+                : node.modifiers, enclosingFunctionFlags & 2 /* Async */
+                ? undefined
+                : node.asteriskToken, node.name, 
+            /*typeParameters*/ undefined, ts.visitParameterList(node.parameters, visitor, context), 
+            /*type*/ undefined, enclosingFunctionFlags & 2 /* Async */ && enclosingFunctionFlags & 1 /* Generator */
+                ? transformAsyncGeneratorFunctionBody(node)
+                : transformFunctionBody(node));
+            enclosingFunctionFlags = savedEnclosingFunctionFlags;
+            return updated;
+        }
+        function visitArrowFunction(node) {
+            var savedEnclosingFunctionFlags = enclosingFunctionFlags;
+            enclosingFunctionFlags = ts.getFunctionFlags(node);
+            var updated = factory.updateArrowFunction(node, node.modifiers, 
+            /*typeParameters*/ undefined, ts.visitParameterList(node.parameters, visitor, context), 
+            /*type*/ undefined, node.equalsGreaterThanToken, transformFunctionBody(node));
+            enclosingFunctionFlags = savedEnclosingFunctionFlags;
+            return updated;
+        }
+        function visitFunctionExpression(node) {
+            var savedEnclosingFunctionFlags = enclosingFunctionFlags;
+            enclosingFunctionFlags = ts.getFunctionFlags(node);
+            var updated = factory.updateFunctionExpression(node, enclosingFunctionFlags & 1 /* Generator */
+                ? ts.visitNodes(node.modifiers, visitorNoAsyncModifier, ts.isModifier)
+                : node.modifiers, enclosingFunctionFlags & 2 /* Async */
+                ? undefined
+                : node.asteriskToken, node.name, 
+            /*typeParameters*/ undefined, ts.visitParameterList(node.parameters, visitor, context), 
+            /*type*/ undefined, enclosingFunctionFlags & 2 /* Async */ && enclosingFunctionFlags & 1 /* Generator */
+                ? transformAsyncGeneratorFunctionBody(node)
+                : transformFunctionBody(node));
+            enclosingFunctionFlags = savedEnclosingFunctionFlags;
+            return updated;
+        }
+        function transformAsyncGeneratorFunctionBody(node) {
+            resumeLexicalEnvironment();
+            var statements = [];
+            var statementOffset = factory.copyPrologue(node.body.statements, statements, /*ensureUseStrict*/ false, visitor);
+            appendObjectRestAssignmentsIfNeeded(statements, node);
+            var savedCapturedSuperProperties = capturedSuperProperties;
+            var savedHasSuperElementAccess = hasSuperElementAccess;
+            capturedSuperProperties = new ts.Set();
+            hasSuperElementAccess = false;
+            var returnStatement = factory.createReturnStatement(emitHelpers().createAsyncGeneratorHelper(factory.createFunctionExpression(
+            /*modifiers*/ undefined, factory.createToken(41 /* AsteriskToken */), node.name && factory.getGeneratedNameForNode(node.name), 
+            /*typeParameters*/ undefined, 
+            /*parameters*/ [], 
+            /*type*/ undefined, factory.updateBlock(node.body, ts.visitLexicalEnvironment(node.body.statements, visitor, context, statementOffset))), !!(hierarchyFacts & 1 /* HasLexicalThis */)));
+            // Minor optimization, emit `_super` helper to capture `super` access in an arrow.
+            // This step isn't needed if we eventually transform this to ES5.
+            var emitSuperHelpers = languageVersion >= 2 /* ES2015 */ && resolver.getNodeCheckFlags(node) & (4096 /* AsyncMethodWithSuperBinding */ | 2048 /* AsyncMethodWithSuper */);
+            if (emitSuperHelpers) {
+                enableSubstitutionForAsyncMethodsWithSuper();
+                var variableStatement = ts.createSuperAccessVariableStatement(factory, resolver, node, capturedSuperProperties);
+                substitutedSuperAccessors[ts.getNodeId(variableStatement)] = true;
+                ts.insertStatementsAfterStandardPrologue(statements, [variableStatement]);
+            }
+            statements.push(returnStatement);
+            ts.insertStatementsAfterStandardPrologue(statements, endLexicalEnvironment());
+            var block = factory.updateBlock(node.body, statements);
+            if (emitSuperHelpers && hasSuperElementAccess) {
+                if (resolver.getNodeCheckFlags(node) & 4096 /* AsyncMethodWithSuperBinding */) {
+                    ts.addEmitHelper(block, ts.advancedAsyncSuperHelper);
+                }
+                else if (resolver.getNodeCheckFlags(node) & 2048 /* AsyncMethodWithSuper */) {
+                    ts.addEmitHelper(block, ts.asyncSuperHelper);
+                }
+            }
+            capturedSuperProperties = savedCapturedSuperProperties;
+            hasSuperElementAccess = savedHasSuperElementAccess;
+            return block;
+        }
+        function transformFunctionBody(node) {
+            var _a;
+            resumeLexicalEnvironment();
+            var statementOffset = 0;
+            var statements = [];
+            var body = (_a = ts.visitNode(node.body, visitor, ts.isConciseBody)) !== null && _a !== void 0 ? _a : factory.createBlock([]);
+            if (ts.isBlock(body)) {
+                statementOffset = factory.copyPrologue(body.statements, statements, /*ensureUseStrict*/ false, visitor);
+            }
+            ts.addRange(statements, appendObjectRestAssignmentsIfNeeded(/*statements*/ undefined, node));
+            var leadingStatements = endLexicalEnvironment();
+            if (statementOffset > 0 || ts.some(statements) || ts.some(leadingStatements)) {
+                var block = factory.converters.convertToFunctionBlock(body, /*multiLine*/ true);
+                ts.insertStatementsAfterStandardPrologue(statements, leadingStatements);
+                ts.addRange(statements, block.statements.slice(statementOffset));
+                return factory.updateBlock(block, ts.setTextRange(factory.createNodeArray(statements), block.statements));
+            }
+            return body;
+        }
+        function appendObjectRestAssignmentsIfNeeded(statements, node) {
+            for (var _i = 0, _a = node.parameters; _i < _a.length; _i++) {
+                var parameter = _a[_i];
+                if (parameter.transformFlags & 16384 /* ContainsObjectRestOrSpread */) {
+                    var temp = factory.getGeneratedNameForNode(parameter);
+                    var declarations = ts.flattenDestructuringBinding(parameter, visitor, context, 1 /* ObjectRest */, temp, 
+                    /*doNotRecordTempVariablesInLine*/ false, 
+                    /*skipInitializer*/ true);
+                    if (ts.some(declarations)) {
+                        var statement = factory.createVariableStatement(
+                        /*modifiers*/ undefined, factory.createVariableDeclarationList(declarations));
+                        ts.setEmitFlags(statement, 1048576 /* CustomPrologue */);
+                        statements = ts.append(statements, statement);
+                    }
+                }
+            }
+            return statements;
+        }
+        function enableSubstitutionForAsyncMethodsWithSuper() {
+            if ((enabledSubstitutions & 1 /* AsyncMethodsWithSuper */) === 0) {
+                enabledSubstitutions |= 1 /* AsyncMethodsWithSuper */;
+                // We need to enable substitutions for call, property access, and element access
+                // if we need to rewrite super calls.
+                context.enableSubstitution(200 /* CallExpression */);
+                context.enableSubstitution(198 /* PropertyAccessExpression */);
+                context.enableSubstitution(199 /* ElementAccessExpression */);
+                // We need to be notified when entering and exiting declarations that bind super.
+                context.enableEmitNotification(249 /* ClassDeclaration */);
+                context.enableEmitNotification(164 /* MethodDeclaration */);
+                context.enableEmitNotification(166 /* GetAccessor */);
+                context.enableEmitNotification(167 /* SetAccessor */);
+                context.enableEmitNotification(165 /* Constructor */);
+                // We need to be notified when entering the generated accessor arrow functions.
+                context.enableEmitNotification(229 /* VariableStatement */);
+            }
+        }
+        /**
+         * Called by the printer just before a node is printed.
+         *
+         * @param hint A hint as to the intended usage of the node.
+         * @param node The node to be printed.
+         * @param emitCallback The callback used to emit the node.
+         */
+        function onEmitNode(hint, node, emitCallback) {
+            // If we need to support substitutions for `super` in an async method,
+            // we should track it here.
+            if (enabledSubstitutions & 1 /* AsyncMethodsWithSuper */ && isSuperContainer(node)) {
+                var superContainerFlags = resolver.getNodeCheckFlags(node) & (2048 /* AsyncMethodWithSuper */ | 4096 /* AsyncMethodWithSuperBinding */);
+                if (superContainerFlags !== enclosingSuperContainerFlags) {
+                    var savedEnclosingSuperContainerFlags = enclosingSuperContainerFlags;
+                    enclosingSuperContainerFlags = superContainerFlags;
+                    previousOnEmitNode(hint, node, emitCallback);
+                    enclosingSuperContainerFlags = savedEnclosingSuperContainerFlags;
+                    return;
+                }
+            }
+            // Disable substitution in the generated super accessor itself.
+            else if (enabledSubstitutions && substitutedSuperAccessors[ts.getNodeId(node)]) {
+                var savedEnclosingSuperContainerFlags = enclosingSuperContainerFlags;
+                enclosingSuperContainerFlags = 0;
+                previousOnEmitNode(hint, node, emitCallback);
+                enclosingSuperContainerFlags = savedEnclosingSuperContainerFlags;
+                return;
+            }
+            previousOnEmitNode(hint, node, emitCallback);
+        }
+        /**
+         * Hooks node substitutions.
+         *
+         * @param hint The context for the emitter.
+         * @param node The node to substitute.
+         */
+        function onSubstituteNode(hint, node) {
+            node = previousOnSubstituteNode(hint, node);
+            if (hint === 1 /* Expression */ && enclosingSuperContainerFlags) {
+                return substituteExpression(node);
+            }
+            return node;
+        }
+        function substituteExpression(node) {
+            switch (node.kind) {
+                case 198 /* PropertyAccessExpression */:
+                    return substitutePropertyAccessExpression(node);
+                case 199 /* ElementAccessExpression */:
+                    return substituteElementAccessExpression(node);
+                case 200 /* CallExpression */:
+                    return substituteCallExpression(node);
+            }
+            return node;
+        }
+        function substitutePropertyAccessExpression(node) {
+            if (node.expression.kind === 105 /* SuperKeyword */) {
+                return ts.setTextRange(factory.createPropertyAccessExpression(factory.createUniqueName("_super", 16 /* Optimistic */ | 32 /* FileLevel */), node.name), node);
+            }
+            return node;
+        }
+        function substituteElementAccessExpression(node) {
+            if (node.expression.kind === 105 /* SuperKeyword */) {
+                return createSuperElementAccessInAsyncMethod(node.argumentExpression, node);
+            }
+            return node;
+        }
+        function substituteCallExpression(node) {
+            var expression = node.expression;
+            if (ts.isSuperProperty(expression)) {
+                var argumentExpression = ts.isPropertyAccessExpression(expression)
+                    ? substitutePropertyAccessExpression(expression)
+                    : substituteElementAccessExpression(expression);
+                return factory.createCallExpression(factory.createPropertyAccessExpression(argumentExpression, "call"), 
+                /*typeArguments*/ undefined, __spreadArrays([
+                    factory.createThis()
+                ], node.arguments));
+            }
+            return node;
+        }
+        function isSuperContainer(node) {
+            var kind = node.kind;
+            return kind === 249 /* ClassDeclaration */
+                || kind === 165 /* Constructor */
+                || kind === 164 /* MethodDeclaration */
+                || kind === 166 /* GetAccessor */
+                || kind === 167 /* SetAccessor */;
+        }
+        function createSuperElementAccessInAsyncMethod(argumentExpression, location) {
+            if (enclosingSuperContainerFlags & 4096 /* AsyncMethodWithSuperBinding */) {
+                return ts.setTextRange(factory.createPropertyAccessExpression(factory.createCallExpression(factory.createIdentifier("_superIndex"), 
+                /*typeArguments*/ undefined, [argumentExpression]), "value"), location);
+            }
+            else {
+                return ts.setTextRange(factory.createCallExpression(factory.createIdentifier("_superIndex"), 
+                /*typeArguments*/ undefined, [argumentExpression]), location);
+            }
+        }
+    }
+    ts.transformES2018 = transformES2018;
+})(ts || (ts = {}));
+/*@internal*/
+var ts;
+(function (ts) {
+    function transformES2019(context) {
+        var factory = context.factory;
+        return ts.chainBundle(context, transformSourceFile);
+        function transformSourceFile(node) {
+            if (node.isDeclarationFile) {
+                return node;
+            }
+            return ts.visitEachChild(node, visitor, context);
+        }
+        function visitor(node) {
+            if ((node.transformFlags & 16 /* ContainsES2019 */) === 0) {
+                return node;
+            }
+            switch (node.kind) {
+                case 284 /* CatchClause */:
+                    return visitCatchClause(node);
+                default:
+                    return ts.visitEachChild(node, visitor, context);
+            }
+        }
+        function visitCatchClause(node) {
+            if (!node.variableDeclaration) {
+                return factory.updateCatchClause(node, factory.createVariableDeclaration(factory.createTempVariable(/*recordTempVariable*/ undefined)), ts.visitNode(node.block, visitor, ts.isBlock));
+            }
+            return ts.visitEachChild(node, visitor, context);
+        }
+    }
+    ts.transformES2019 = transformES2019;
+})(ts || (ts = {}));
+/*@internal*/
+var ts;
+(function (ts) {
+    function transformES2020(context) {
+        var factory = context.factory, hoistVariableDeclaration = context.hoistVariableDeclaration;
+        return ts.chainBundle(context, transformSourceFile);
+        function transformSourceFile(node) {
+            if (node.isDeclarationFile) {
+                return node;
+            }
+            return ts.visitEachChild(node, visitor, context);
+        }
+        function visitor(node) {
+            if ((node.transformFlags & 8 /* ContainsES2020 */) === 0) {
+                return node;
+            }
+            switch (node.kind) {
+                case 198 /* PropertyAccessExpression */:
+                case 199 /* ElementAccessExpression */:
+                case 200 /* CallExpression */:
+                    if (node.flags & 32 /* OptionalChain */) {
+                        var updated = visitOptionalExpression(node, /*captureThisArg*/ false, /*isDelete*/ false);
+                        ts.Debug.assertNotNode(updated, ts.isSyntheticReference);
+                        return updated;
+                    }
+                    return ts.visitEachChild(node, visitor, context);
+                case 213 /* BinaryExpression */:
+                    if (node.operatorToken.kind === 60 /* QuestionQuestionToken */) {
+                        return transformNullishCoalescingExpression(node);
+                    }
+                    return ts.visitEachChild(node, visitor, context);
+                case 207 /* DeleteExpression */:
+                    return visitDeleteExpression(node);
+                default:
+                    return ts.visitEachChild(node, visitor, context);
+            }
+        }
+        function flattenChain(chain) {
+            ts.Debug.assertNotNode(chain, ts.isNonNullChain);
+            var links = [chain];
+            while (!chain.questionDotToken && !ts.isTaggedTemplateExpression(chain)) {
+                chain = ts.cast(ts.skipPartiallyEmittedExpressions(chain.expression), ts.isOptionalChain);
+                ts.Debug.assertNotNode(chain, ts.isNonNullChain);
+                links.unshift(chain);
+            }
+            return { expression: chain.expression, chain: links };
+        }
+        function visitNonOptionalParenthesizedExpression(node, captureThisArg, isDelete) {
+            var expression = visitNonOptionalExpression(node.expression, captureThisArg, isDelete);
+            if (ts.isSyntheticReference(expression)) {
+                // `(a.b)` -> { expression `((_a = a).b)`, thisArg: `_a` }
+                // `(a[b])` -> { expression `((_a = a)[b])`, thisArg: `_a` }
+                return factory.createSyntheticReferenceExpression(factory.updateParenthesizedExpression(node, expression.expression), expression.thisArg);
+            }
+            return factory.updateParenthesizedExpression(node, expression);
+        }
+        function visitNonOptionalPropertyOrElementAccessExpression(node, captureThisArg, isDelete) {
+            if (ts.isOptionalChain(node)) {
+                // If `node` is an optional chain, then it is the outermost chain of an optional expression.
+                return visitOptionalExpression(node, captureThisArg, isDelete);
+            }
+            var expression = ts.visitNode(node.expression, visitor, ts.isExpression);
+            ts.Debug.assertNotNode(expression, ts.isSyntheticReference);
+            var thisArg;
+            if (captureThisArg) {
+                if (!ts.isSimpleCopiableExpression(expression)) {
+                    thisArg = factory.createTempVariable(hoistVariableDeclaration);
+                    expression = factory.createAssignment(thisArg, expression);
+                    // if (inParameterInitializer) tempVariableInParameter = true;
+                }
+                else {
+                    thisArg = expression;
+                }
+            }
+            expression = node.kind === 198 /* PropertyAccessExpression */
+                ? factory.updatePropertyAccessExpression(node, expression, ts.visitNode(node.name, visitor, ts.isIdentifier))
+                : factory.updateElementAccessExpression(node, expression, ts.visitNode(node.argumentExpression, visitor, ts.isExpression));
+            return thisArg ? factory.createSyntheticReferenceExpression(expression, thisArg) : expression;
+        }
+        function visitNonOptionalCallExpression(node, captureThisArg) {
+            if (ts.isOptionalChain(node)) {
+                // If `node` is an optional chain, then it is the outermost chain of an optional expression.
+                return visitOptionalExpression(node, captureThisArg, /*isDelete*/ false);
+            }
+            return ts.visitEachChild(node, visitor, context);
+        }
+        function visitNonOptionalExpression(node, captureThisArg, isDelete) {
+            switch (node.kind) {
+                case 204 /* ParenthesizedExpression */: return visitNonOptionalParenthesizedExpression(node, captureThisArg, isDelete);
+                case 198 /* PropertyAccessExpression */:
+                case 199 /* ElementAccessExpression */: return visitNonOptionalPropertyOrElementAccessExpression(node, captureThisArg, isDelete);
+                case 200 /* CallExpression */: return visitNonOptionalCallExpression(node, captureThisArg);
+                default: return ts.visitNode(node, visitor, ts.isExpression);
+            }
+        }
+        function visitOptionalExpression(node, captureThisArg, isDelete) {
+            var _a = flattenChain(node), expression = _a.expression, chain = _a.chain;
+            var left = visitNonOptionalExpression(expression, ts.isCallChain(chain[0]), /*isDelete*/ false);
+            var leftThisArg = ts.isSyntheticReference(left) ? left.thisArg : undefined;
+            var leftExpression = ts.isSyntheticReference(left) ? left.expression : left;
+            var capturedLeft = leftExpression;
+            if (!ts.isSimpleCopiableExpression(leftExpression)) {
+                capturedLeft = factory.createTempVariable(hoistVariableDeclaration);
+                leftExpression = factory.createAssignment(capturedLeft, leftExpression);
+                // if (inParameterInitializer) tempVariableInParameter = true;
+            }
+            var rightExpression = capturedLeft;
+            var thisArg;
+            for (var i = 0; i < chain.length; i++) {
+                var segment = chain[i];
+                switch (segment.kind) {
+                    case 198 /* PropertyAccessExpression */:
+                    case 199 /* ElementAccessExpression */:
+                        if (i === chain.length - 1 && captureThisArg) {
+                            if (!ts.isSimpleCopiableExpression(rightExpression)) {
+                                thisArg = factory.createTempVariable(hoistVariableDeclaration);
+                                rightExpression = factory.createAssignment(thisArg, rightExpression);
+                                // if (inParameterInitializer) tempVariableInParameter = true;
+                            }
+                            else {
+                                thisArg = rightExpression;
+                            }
+                        }
+                        rightExpression = segment.kind === 198 /* PropertyAccessExpression */
+                            ? factory.createPropertyAccessExpression(rightExpression, ts.visitNode(segment.name, visitor, ts.isIdentifier))
+                            : factory.createElementAccessExpression(rightExpression, ts.visitNode(segment.argumentExpression, visitor, ts.isExpression));
+                        break;
+                    case 200 /* CallExpression */:
+                        if (i === 0 && leftThisArg) {
+                            rightExpression = factory.createFunctionCallCall(rightExpression, leftThisArg.kind === 105 /* SuperKeyword */ ? factory.createThis() : leftThisArg, ts.visitNodes(segment.arguments, visitor, ts.isExpression));
+                        }
+                        else {
+                            rightExpression = factory.createCallExpression(rightExpression, 
+                            /*typeArguments*/ undefined, ts.visitNodes(segment.arguments, visitor, ts.isExpression));
+                        }
+                        break;
+                }
+                ts.setOriginalNode(rightExpression, segment);
+            }
+            var target = isDelete
+                ? factory.createConditionalExpression(createNotNullCondition(leftExpression, capturedLeft, /*invert*/ true), /*questionToken*/ undefined, factory.createTrue(), /*colonToken*/ undefined, factory.createDeleteExpression(rightExpression))
+                : factory.createConditionalExpression(createNotNullCondition(leftExpression, capturedLeft, /*invert*/ true), /*questionToken*/ undefined, factory.createVoidZero(), /*colonToken*/ undefined, rightExpression);
+            return thisArg ? factory.createSyntheticReferenceExpression(target, thisArg) : target;
+        }
+        function createNotNullCondition(left, right, invert) {
+            return factory.createBinaryExpression(factory.createBinaryExpression(left, factory.createToken(invert ? 36 /* EqualsEqualsEqualsToken */ : 37 /* ExclamationEqualsEqualsToken */), factory.createNull()), factory.createToken(invert ? 56 /* BarBarToken */ : 55 /* AmpersandAmpersandToken */), factory.createBinaryExpression(right, factory.createToken(invert ? 36 /* EqualsEqualsEqualsToken */ : 37 /* ExclamationEqualsEqualsToken */), factory.createVoidZero()));
+        }
+        function transformNullishCoalescingExpression(node) {
+            var left = ts.visitNode(node.left, visitor, ts.isExpression);
+            var right = left;
+            if (!ts.isSimpleCopiableExpression(left)) {
+                right = factory.createTempVariable(hoistVariableDeclaration);
+                left = factory.createAssignment(right, left);
+                // if (inParameterInitializer) tempVariableInParameter = true;
+            }
+            return factory.createConditionalExpression(createNotNullCondition(left, right), 
+            /*questionToken*/ undefined, right, 
+            /*colonToken*/ undefined, ts.visitNode(node.right, visitor, ts.isExpression));
+        }
+        function visitDeleteExpression(node) {
+            return ts.isOptionalChain(ts.skipParentheses(node.expression))
+                ? ts.setOriginalNode(visitNonOptionalExpression(node.expression, /*captureThisArg*/ false, /*isDelete*/ true), node)
+                : factory.updateDeleteExpression(node, ts.visitNode(node.expression, visitor, ts.isExpression));
+        }
+    }
+    ts.transformES2020 = transformES2020;
+})(ts || (ts = {}));
+/*@internal*/
+var ts;
+(function (ts) {
+    function transformESNext(context) {
+        var hoistVariableDeclaration = context.hoistVariableDeclaration, factory = context.factory;
+        return ts.chainBundle(context, transformSourceFile);
+        function transformSourceFile(node) {
+            if (node.isDeclarationFile) {
+                return node;
+            }
+            return ts.visitEachChild(node, visitor, context);
+        }
+        function visitor(node) {
+            if ((node.transformFlags & 4 /* ContainsESNext */) === 0) {
+                return node;
+            }
+            switch (node.kind) {
+                case 213 /* BinaryExpression */:
+                    var binaryExpression = node;
+                    if (ts.isLogicalOrCoalescingAssignmentExpression(binaryExpression)) {
+                        return transformLogicalAssignment(binaryExpression);
+                    }
+                // falls through
+                default:
+                    return ts.visitEachChild(node, visitor, context);
+            }
+        }
+        function transformLogicalAssignment(binaryExpression) {
+            var operator = binaryExpression.operatorToken;
+            var nonAssignmentOperator = ts.getNonAssignmentOperatorForCompoundAssignment(operator.kind);
+            var left = ts.skipParentheses(ts.visitNode(binaryExpression.left, visitor, ts.isLeftHandSideExpression));
+            var assignmentTarget = left;
+            var right = ts.skipParentheses(ts.visitNode(binaryExpression.right, visitor, ts.isExpression));
+            if (ts.isAccessExpression(left)) {
+                var propertyAccessTargetSimpleCopiable = ts.isSimpleCopiableExpression(left.expression);
+                var propertyAccessTarget = propertyAccessTargetSimpleCopiable ? left.expression :
+                    factory.createTempVariable(hoistVariableDeclaration);
+                var propertyAccessTargetAssignment = propertyAccessTargetSimpleCopiable ? left.expression : factory.createAssignment(propertyAccessTarget, left.expression);
+                if (ts.isPropertyAccessExpression(left)) {
+                    assignmentTarget = factory.createPropertyAccessExpression(propertyAccessTarget, left.name);
+                    left = factory.createPropertyAccessExpression(propertyAccessTargetAssignment, left.name);
+                }
+                else {
+                    var elementAccessArgumentSimpleCopiable = ts.isSimpleCopiableExpression(left.argumentExpression);
+                    var elementAccessArgument = elementAccessArgumentSimpleCopiable ? left.argumentExpression :
+                        factory.createTempVariable(hoistVariableDeclaration);
+                    assignmentTarget = factory.createElementAccessExpression(propertyAccessTarget, elementAccessArgument);
+                    left = factory.createElementAccessExpression(propertyAccessTargetAssignment, elementAccessArgumentSimpleCopiable ? left.argumentExpression : factory.createAssignment(elementAccessArgument, left.argumentExpression));
+                }
+            }
+            return factory.createBinaryExpression(left, nonAssignmentOperator, factory.createParenthesizedExpression(factory.createAssignment(assignmentTarget, right)));
+        }
+    }
+    ts.transformESNext = transformESNext;
+})(ts || (ts = {}));
+/*@internal*/
+var ts;
+(function (ts) {
+    function transformJsx(context) {
+        var factory = context.factory, emitHelpers = context.getEmitHelperFactory;
+        var compilerOptions = context.getCompilerOptions();
+        var currentSourceFile;
+        return ts.chainBundle(context, transformSourceFile);
+        /**
+         * Transform JSX-specific syntax in a SourceFile.
+         *
+         * @param node A SourceFile node.
+         */
+        function transformSourceFile(node) {
+            if (node.isDeclarationFile) {
+                return node;
+            }
+            currentSourceFile = node;
+            var visited = ts.visitEachChild(node, visitor, context);
+            ts.addEmitHelpers(visited, context.readEmitHelpers());
+            return visited;
+        }
+        function visitor(node) {
+            if (node.transformFlags & 2 /* ContainsJsx */) {
+                return visitorWorker(node);
+            }
+            else {
+                return node;
+            }
+        }
+        function visitorWorker(node) {
+            switch (node.kind) {
+                case 270 /* JsxElement */:
+                    return visitJsxElement(node, /*isChild*/ false);
+                case 271 /* JsxSelfClosingElement */:
+                    return visitJsxSelfClosingElement(node, /*isChild*/ false);
+                case 274 /* JsxFragment */:
+                    return visitJsxFragment(node, /*isChild*/ false);
+                case 280 /* JsxExpression */:
+                    return visitJsxExpression(node);
+                default:
+                    return ts.visitEachChild(node, visitor, context);
+            }
+        }
+        function transformJsxChildToExpression(node) {
+            switch (node.kind) {
+                case 11 /* JsxText */:
+                    return visitJsxText(node);
+                case 280 /* JsxExpression */:
+                    return visitJsxExpression(node);
+                case 270 /* JsxElement */:
+                    return visitJsxElement(node, /*isChild*/ true);
+                case 271 /* JsxSelfClosingElement */:
+                    return visitJsxSelfClosingElement(node, /*isChild*/ true);
+                case 274 /* JsxFragment */:
+                    return visitJsxFragment(node, /*isChild*/ true);
+                default:
+                    return ts.Debug.failBadSyntaxKind(node);
+            }
+        }
+        function visitJsxElement(node, isChild) {
+            return visitJsxOpeningLikeElement(node.openingElement, node.children, isChild, /*location*/ node);
+        }
+        function visitJsxSelfClosingElement(node, isChild) {
+            return visitJsxOpeningLikeElement(node, /*children*/ undefined, isChild, /*location*/ node);
+        }
+        function visitJsxFragment(node, isChild) {
+            return visitJsxOpeningFragment(node.openingFragment, node.children, isChild, /*location*/ node);
+        }
+        function visitJsxOpeningLikeElement(node, children, isChild, location) {
+            var tagName = getTagName(node);
+            var objectProperties;
+            var attrs = node.attributes.properties;
+            if (attrs.length === 0) {
+                objectProperties = factory.createNull();
+                // When there are no attributes, React wants "null"
+            }
+            else {
+                // Map spans of JsxAttribute nodes into object literals and spans
+                // of JsxSpreadAttribute nodes into expressions.
+                var segments = ts.flatten(ts.spanMap(attrs, ts.isJsxSpreadAttribute, function (attrs, isSpread) { return isSpread
+                    ? ts.map(attrs, transformJsxSpreadAttributeToExpression)
+                    : factory.createObjectLiteralExpression(ts.map(attrs, transformJsxAttributeToObjectLiteralElement)); }));
+                if (ts.isJsxSpreadAttribute(attrs[0])) {
+                    // We must always emit at least one object literal before a spread
+                    // argument.factory.createObjectLiteral
+                    segments.unshift(factory.createObjectLiteralExpression());
+                }
+                // Either emit one big object literal (no spread attribs), or
+                // a call to the __assign helper.
+                objectProperties = ts.singleOrUndefined(segments);
+                if (!objectProperties) {
+                    objectProperties = emitHelpers().createAssignHelper(segments);
+                }
+            }
+            var element = ts.createExpressionForJsxElement(factory, context.getEmitResolver().getJsxFactoryEntity(currentSourceFile), compilerOptions.reactNamespace, // TODO: GH#18217
+ 

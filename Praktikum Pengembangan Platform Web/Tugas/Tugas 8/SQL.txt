@@ -1,0 +1,3 @@
+SELECT nim, nama_mahasiswa, kelas, nama_prodi FROM tbl_mahasiswa
+
+SELECT a.nim, a.kelas, b.kode_matakuliah, c.nama_matakuliah, b.nilai_huruf, c.kode_prodi FROM tbl_mahasiswa a, tbl_nilai b, tbl_matakuliah c WHERE b.kode_matakuliah=c.kode_matakuliah

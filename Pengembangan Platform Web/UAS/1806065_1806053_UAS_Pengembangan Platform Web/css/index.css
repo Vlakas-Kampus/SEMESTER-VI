@@ -1,0 +1,22 @@
+body {
+    background: #191828;
+    color: #efedef;
+}
+
+/*   Change Color for Active Tabs     */
+.nav-pills>li.active>a,
+.nav-pills>li.active>a:focus,
+.nav-pills>li.active>a:hover,
+.nav-pills>li>a:hover,
+.nav>li>a:hover {
+    background-color: #F47321;
+    border-color: #FFFFFF;
+    color: #FFFFFF;
+}
+
+/*   Change Color for Inactive Tabs     */
+.nav-pills>li>a {
+    background-color: #777;
+    border-color: #FFFFFF;
+    color: #FFFFFF;
+}
